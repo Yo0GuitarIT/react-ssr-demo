@@ -1,6 +1,4 @@
-import React from "react";
-
-function App() {
+const App = () => {
   return (
     <div style={{ padding: "20px", fontFamily: "Arial, sans-serif" }}>
       <h1>🚀 React Server-Side Rendering Demo</h1>
@@ -25,6 +23,6 @@ function App() {
       </div>
     </div>
   );
-}
+};
 
 export default App;
