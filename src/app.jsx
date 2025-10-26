@@ -1,3 +1,5 @@
+import Button from "./components/Button";
+
 const App = () => {
   return (
     <div style={{ padding: "20px", fontFamily: "Arial, sans-serif" }}>
@@ -21,6 +23,8 @@ const App = () => {
           <li>現代化開發體驗</li>
         </ul>
       </div>
+
+      <Button />
     </div>
   );
 };
