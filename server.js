@@ -4,7 +4,7 @@ const port = 3000;
 
 // 根路由 - 顯示 "hello world"
 app.get("/", (req, res) => {
-  res.send("hello world");
+  res.send("hello world -！");
 });
 
 // 啟動伺服器
