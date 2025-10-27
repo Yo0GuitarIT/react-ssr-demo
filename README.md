@@ -2,6 +2,8 @@
 
 這是一個使用現代化技術棧 **Vite + Express + React** 實現的 Server-Side Rendering 示範專案。
 
+本專案展示了如何使用 React 19 的 **`renderToPipeableStream`** 進行高效能串流渲染。
+
 ## 🚀 技術棧
 
 - **React 19.2.0** - 最新版本的 React
@@ -9,6 +11,7 @@
 - **Express 5.1.0** - Node.js 網頁框架
 - **ES Modules** - 使用原生 ES 模組語法
 - **pnpm** - 高效能的套件管理器
+- **renderToPipeableStream** - React 19 串流 SSR API
 
 ## 📦 安裝與執行
 
@@ -125,16 +128,69 @@ export default defineConfig({
 
 ### 5. 建立伺服器端入口點 (`src/entry-server.jsx`)
 
+現在我們使用 React 19 的 **`renderToPipeableStream`** 進行串流渲染：
+
 ```jsx
-import { renderToString } from "react-dom/server";
+import { renderToPipeableStream } from "react-dom/server";
+import { Writable } from "stream";
 import App from "./app.jsx";
 
-export function render() {
-  // 將 React 組件渲染為 HTML 字串
-  const html = renderToString(<App />);
-  return html;
+export function render(url, response, template) {
+  // 使用 renderToPipeableStream 進行串流渲染
+  return new Promise((resolve, reject) => {
+    let html = "";
+
+    // 創建一個可寫入的流來收集 HTML
+    const writableStream = new Writable({
+      write(chunk, encoding, callback) {
+        html += chunk.toString();
+        callback();
+      },
+    });
+
+    const { pipe, abort } = renderToPipeableStream(<App />, {
+      bootstrapScripts: ["/src/entry-client.jsx"],
+      onShellReady() {
+        // 當初始 shell 準備好時開始收集 HTML
+        pipe(writableStream);
+      },
+      onAllReady() {
+        // 當所有內容都渲染完成後，將 HTML 插入模板並發送
+        const finalHtml = template.replace("<!--ssr-outlet-->", html);
+
+        response.setHeader("content-type", "text/html");
+        response.end(finalHtml);
+        resolve();
+      },
+      onShellError(error) {
+        // 處理 shell 渲染錯誤
+        reject(error);
+      },
+      onError(error) {
+        // 記錄錯誤但不中斷串流
+        console.error("SSR error:", error);
+      },
+    });
+
+    // 設定超時中止機制（可選）
+    setTimeout(() => {
+      abort();
+    }, 10000); // 10 秒超時
+  });
 }
 ```
+
+> **注意**：傳統的 `renderToString` 方法如下：
+>
+> ```jsx
+> import { renderToString } from "react-dom/server";
+> import App from "./app.jsx";
+>
+> export function render() {
+>   const html = renderToString(<App />);
+>   return html;
+> }
+> ```
 
 ### 6. 建立客戶端入口點 (`src/entry-client.jsx`)
 
@@ -149,64 +205,135 @@ hydrateRoot(document.getElementById("root"), <App />);
 ### 7. 建立 Express 伺服器 (`server.js`)
 
 ```javascript
-import fs from 'node:fs'
-import path from 'node:path'
-import { fileURLToPath } from 'node:url'
-import express from 'express'
-import { createServer as createViteServer } from 'vite'
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import express from "express";
+import { createServer as createViteServer } from "vite";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url))
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 async function createServer() {
-  const app = express()
+  const app = express();
 
   // 建立 Vite 伺服器在中介軟體模式
   const vite = await createViteServer({
     server: { middlewareMode: true },
-    appType: 'custom'
-  })
+    appType: "custom",
+  });
 
   // 使用 vite 的連接實例作為中介軟體
-  app.use(vite.middlewares)
+  app.use(vite.middlewares);
 
   // 處理根路由的 SSR
-  app.get('/', async (req, res, next) => {
-    const url = req.originalUrl
+  app.get("/", async (req, res, next) => {
+    const url = req.originalUrl;
 
     try {
       // 1. 讀取 index.html
       let template = fs.readFileSync(
-        path.resolve(__dirname, 'index.html'),
-        'utf-8',
-      )
+        path.resolve(__dirname, "index.html"),
+        "utf-8"
+      );
 
       // 2. 應用 Vite HTML 轉換
-      template = await vite.transformIndexHtml(url, template)
+      template = await vite.transformIndexHtml(url, template);
 
       // 3. 載入伺服器入口點
-      const { render } = await vite.ssrLoadModule('/src/entry-server.jsx')
+      const { render } = await vite.ssrLoadModule("/src/entry-server.jsx");
 
-      // 4. 渲染 app HTML
-      const appHtml = await render(url)
-
-      // 5. 將 app 渲染的 HTML 注入到模板中
-      const html = template.replace(\`<!--ssr-outlet-->\`, appHtml)
-
-      // 6. 回傳渲染的 HTML
-      res.status(200).set({ 'Content-Type': 'text/html' }).end(html)
+      // 4. 使用 renderToPipeableStream 進行串流渲染
+      await render(url, res, template);
     } catch (e) {
-      vite.ssrFixStacktrace(e)
-      next(e)
+      vite.ssrFixStacktrace(e);
+      next(e);
     }
-  })
+  });
 
   app.listen(3000, () => {
-    console.log('🚀 伺服器運行在 http://localhost:3000')
-  })
+    console.log("🚀 伺服器運行在 http://localhost:3000");
+  });
 }
 
-createServer()
+createServer();
 ```
+
+## 🌊 renderToPipeableStream vs renderToString
+
+本專案使用 React 19 的 **`renderToPipeableStream`** 替代傳統的 `renderToString`，提供更好的性能和用戶體驗。
+
+### 主要差異
+
+| 特性             | renderToString         | renderToPipeableStream   |
+| ---------------- | ---------------------- | ------------------------ |
+| **渲染方式**     | 同步，等待所有內容完成 | 非同步串流，逐步發送內容 |
+| **首次內容顯示** | 需等待完整渲染         | 可立即顯示 shell         |
+| **性能**         | 阻塞式，較慢           | 非阻塞式，更快           |
+| **錯誤處理**     | 基本錯誤處理           | 精細的錯誤處理機制       |
+| **超時控制**     | 無內建支援             | 支援渲染超時中止         |
+| **適用場景**     | 簡單應用               | 複雜應用，需要最佳性能   |
+
+### renderToPipeableStream 的優勢
+
+1. **🚀 更快的首次內容顯示 (TTFB)**
+
+   - 當 React 渲染完初始 shell 時立即開始發送 HTML
+   - 用戶無需等待整個頁面渲染完成
+
+2. **📊 更好的 Core Web Vitals**
+
+   - 改善 Largest Contentful Paint (LCP)
+   - 減少 Time to First Byte (TTFB)
+
+3. **🛡️ 強大的錯誤處理**
+
+   ```jsx
+   const { pipe, abort } = renderToPipeableStream(<App />, {
+     onShellReady() {
+       // 初始 shell 準備好時
+       response.setHeader("content-type", "text/html");
+       pipe(response);
+     },
+     onShellError(error) {
+       // 處理 shell 錯誤，可顯示錯誤頁面
+       response.statusCode = 500;
+       response.send("<h1>Something went wrong</h1>");
+     },
+     onError(error) {
+       // 記錄錯誤但繼續串流
+       console.error("SSR error:", error);
+     },
+   });
+   ```
+
+4. **⏱️ 超時控制**
+
+   ```jsx
+   // 10 秒後中止渲染，剩餘內容由客戶端完成
+   setTimeout(() => {
+     abort();
+   }, 10000);
+   ```
+
+5. **🔧 彈性配置**
+   - `onShellReady`: 適合即時串流
+   - `onAllReady`: 適合靜態生成或爬蟲
+   - `bootstrapScripts`: 自動注入客戶端腳本
+
+### 何時使用哪種方法
+
+**使用 renderToPipeableStream 當：**
+
+- 需要最佳的性能和用戶體驗
+- 處理複雜或大型應用
+- 需要精細的錯誤處理
+- 想要改善 Core Web Vitals 指標
+
+**使用 renderToString 當：**
+
+- 簡單的應用或原型
+- 需要同步的渲染流程
+- 不需要串流的特殊場景
 
 ## 💧 什麼是 Hydration (水合)?
 
@@ -231,13 +358,34 @@ createServer()
 **伺服器端 (entry-server.jsx)**：
 
 ```jsx
-import { renderToString } from "react-dom/server";
+import { renderToPipeableStream } from "react-dom/server";
+import { Writable } from "stream";
 import App from "./app.jsx";
 
-export function render() {
-  // 將 React 組件渲染為 HTML 字串
-  const html = renderToString(<App />);
-  return html;
+export function render(url, response, template) {
+  return new Promise((resolve, reject) => {
+    let html = "";
+
+    const writableStream = new Writable({
+      write(chunk, encoding, callback) {
+        html += chunk.toString();
+        callback();
+      },
+    });
+
+    const { pipe, abort } = renderToPipeableStream(<App />, {
+      bootstrapScripts: ["/src/entry-client.jsx"],
+      onAllReady() {
+        const finalHtml = template.replace("<!--ssr-outlet-->", html);
+        response.setHeader("content-type", "text/html");
+        response.end(finalHtml);
+        resolve();
+      },
+      onShellError(error) {
+        reject(error);
+      },
+    });
+  });
 }
 ```
 
@@ -287,8 +435,10 @@ hydrateRoot(document.getElementById("root"), <App />);
 
 - [Vite 官方文件](https://vitejs.dev/)
 - [React SSR 指南](https://react.dev/reference/react-dom/server)
+- [renderToPipeableStream API](https://react.dev/reference/react-dom/server/renderToPipeableStream)
 - [Express 官方文件](https://expressjs.com/)
 - [Hydration 深入解析](https://react.dev/reference/react-dom/client/hydrateRoot)
+- [React 19 新功能](https://react.dev/blog/2024/04/25/react-19)
 
 ## 📄 授權
 
